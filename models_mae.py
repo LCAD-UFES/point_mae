@@ -147,27 +147,62 @@ class MaskedAutoencoderViT(nn.Module):
 
         return x_masked, mask, ids_restore
 
-    def forward_encoder(self, x, mask_ratio):
+    def custom_masking(self, x, mask):
+        """
+        Aplica uma máscara customizada (0=visível, 1=mascarado) e retorna x_masked e ids_restore alinhados.
+        x: [N, L, D] ou [L, D]
+        mask: [N, L] ou [L] (0=visível, 1=mascarado)
+        Retorna: x_masked, ids_restore
+        """
+        if isinstance(mask, list):
+            mask = torch.tensor(mask, device=x.device)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(0)
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        N, L, D = x.shape
+        # Patches visíveis
+        ids_keep = []
+        for b in range(N):
+            ids_keep.append((mask[b] == 0).nonzero(as_tuple=True)[0])
+        max_keep = max([len(k) for k in ids_keep])
+        x_masked = torch.zeros((N, max_keep, D), device=x.device)
+        for b in range(N):
+            x_masked[b, :len(ids_keep[b])] = x[b, ids_keep[b]]
+        # ids_restore: vetor de tamanho L, igual ao random masking
+        ids_restore = torch.zeros((N, L), dtype=torch.long, device=x.device)
+        for b in range(N):
+            visible = (mask[b] == 0).nonzero(as_tuple=True)[0]
+            masked = (mask[b] == 1).nonzero(as_tuple=True)[0]
+            ids_restore[b, :len(visible)] = visible
+            ids_restore[b, len(visible):] = masked
+        return x_masked, ids_restore
+
+    def forward_encoder(self, x, mask_ratio=0.75, mask=None):
         # embed patches
         x = self.patch_embed(x)
 
         # add pos embed w/o cls token
         x = x + self.pos_embed[:, 1:, :]
-
-        # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        if mask is not None:
+            # Se máscara customizada for fornecida, use custom_masking
+            x_masked, ids_restore = self.custom_masking(x, mask)
+            mask_out = mask.unsqueeze(0) if mask.dim() == 1 else mask
+        else:
+            # masking: length -> length * mask_ratio
+            x_masked, mask_out, ids_restore = self.random_masking(x, mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
-        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_tokens, x), dim=1)
+        cls_tokens = cls_token.expand(x_masked.shape[0], -1, -1)
+        x_masked = torch.cat((cls_tokens, x_masked), dim=1)
 
         # apply Transformer blocks
         for blk in self.blocks:
-            x = blk(x)
-        x = self.norm(x)
+            x_masked = blk(x_masked)
+        x_masked = self.norm(x_masked)
 
-        return x, mask, ids_restore
+        return x_masked, mask_out, ids_restore
 
     def forward_decoder(self, x, ids_restore):
         # embed tokens
@@ -213,11 +248,11 @@ class MaskedAutoencoderViT(nn.Module):
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
-    def forward(self, imgs, mask_ratio=0.75):
-        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
+    def forward(self, imgs, mask_ratio=0.75, mask=None):
+        latent, mask_out, ids_restore = self.forward_encoder(imgs, mask_ratio, mask)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
-        return loss, pred, mask
+        loss = self.forward_loss(imgs, pred, mask_out)
+        return loss, pred, mask_out
 
 
 def mae_vit_base_patch16_dec512d8b(**kwargs):
@@ -248,3 +283,48 @@ def mae_vit_huge_patch14_dec512d8b(**kwargs):
 mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
+
+
+# # =================================================================================
+# # Exemplo de Uso
+# # =================================================================================
+
+# if __name__ == '__main__':
+#     # Verifica se a GPU está disponível
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     print(f"Usando dispositivo: {device}")
+
+#     model = MaskedAutoencoderViT(
+#         img_size=224,
+#         patch_size=16,       # Número de "patches"
+#         in_chans=3,     # Tamanho de cada "patch" (k do k-NN)
+#         embed_dim=1024,
+#         depth=24,
+#         num_heads=16,
+#         decoder_embed_dim=512,
+#         decoder_depth=8,
+#         decoder_num_heads=16,
+#         mlp_ratio=4.,
+#         norm_layer=nn.LayerNorm,
+#         norm_pix_loss=False
+#     ).to(device)
+
+#     print("Estrutura do modelo PointMAE:")
+#     print(model)
+
+    # # Cria uma nuvem de pontos aleatória para teste
+    # # Batch size = 4, 1024 pontos por nuvem, 3 coordenadas (x, y, z)
+    # dummy_point_cloud = torch.randn(4, 1024, 3).to(device)
+    # # dummy_point_cloud = torch.randn(4, 167936, 3).to(device)
+
+    # # Realiza uma passagem para frente (forward pass)
+    # print("Executando forward pass...")
+    # loss, pred, mask = model(dummy_point_cloud)
+
+    # print(f"Forward pass concluído.")
+    # print(f"  - Shape da nuvem de pontos de entrada: {dummy_point_cloud.shape}")
+    # print(f"  - Perda (Loss): {loss.item():.4f}")
+    # print(f"  - Shape da predição (pontos reconstruídos): {pred.shape}")
+    # print(f"  - Shape da máscara: {mask.shape}")
+    # print(f"  - Número de patches visíveis: {int(mask.numel() - mask.sum())}")
+    # print(f"  - Número de patches mascarados: {int(mask.sum())}")

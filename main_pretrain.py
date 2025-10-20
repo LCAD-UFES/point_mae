@@ -219,3 +219,45 @@ if __name__ == '__main__':
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
+
+
+# # =================================================================================
+# # Exemplo de Uso
+# # =================================================================================
+
+# if __name__ == '__main__':
+#     # Verifica se a GPU está disponível
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     print(f"Usando dispositivo: {device}")
+
+#     model = models_mae.MaskedAutoencoderViT(
+#         img_size=224,
+#         patch_size=16,       # Número de "patches"
+#         in_chans=3,     # Tamanho de cada "patch" (k do k-NN)
+#         embed_dim=1024,
+#         depth=24,
+#         num_heads=16,
+#         decoder_embed_dim=512,
+#         decoder_depth=8,
+#         decoder_num_heads=16,
+#         mlp_ratio=4.
+#     ).to(device)
+
+#     print("Estrutura do modelo PointMAE:")
+#     print(model)
+
+
+#     # Cria uma "imagem" de entrada aleatória para teste com as dimensões corretas
+#     # Batch size = 4, 3 canais (RGB), altura 224, largura 224
+#     dummy_image_input = torch.randn(4, 3, 224, 224).to(device) # Corrigido aqui!
+
+#     # Realiza uma passagem para frente (forward pass)
+#     print("Executando forward pass...")
+#     loss, pred, mask = model(dummy_image_input)
+#     print(f"Forward pass concluído.")
+#     print(f"  - Shape da nuvem de pontos de entrada: {dummy_image_input.shape}")
+#     print(f"  - Perda (Loss): {loss.item():.4f}")
+#     print(f"  - Shape da predição (pontos reconstruídos): {pred.shape}")
+#     print(f"  - Shape da máscara: {mask.shape}")
+#     print(f"  - Número de patches visíveis: {int(mask.numel() - mask.sum())}")
+#     print(f"  - Número de patches mascarados: {int(mask.sum())}")
