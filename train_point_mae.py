@@ -5,6 +5,7 @@ import numpy as np
 import os
 import argparse
 from pathlib import Path
+import util.misc as misc
 
 # Importa o modelo PointMAE do script que criamos anteriormente
 from point_mae import PointMAE
@@ -27,11 +28,6 @@ end_header
     with open(filename, 'w') as f:
         f.write(header)
         np.savetxt(f, points, fmt='%.6f')
-
-def read_bin(filename):
-    """Lê um arquivo .bin e retorna os pontos como um array numpy."""
-    points = np.fromfile(filename, dtype=np.float32).reshape(-1, 4)
-    return points[:, :3]
 
 # =================================================================================
 # Dataset e Dataloader para Nuvens de Pontos
@@ -62,14 +58,45 @@ class PointCloudDataset(Dataset):
     def __init__(self, data_path):
         self.data_path = data_path
         self.file_list = [f for f in os.listdir(data_path) if f.endswith('.bin')]
+        self.num_points = 78596 #8192
 
     def __len__(self):
         return len(self.file_list)
 
     def __getitem__(self, idx):
         file_path = os.path.join(self.data_path, self.file_list[idx])
-        point_cloud = read_bin(file_path)
+        """Lê um arquivo .bin e retorna os pontos como um array numpy."""
+        # 1. Carregue sua nuvem de pontos
+        # Supondo 4 colunas (XYZI)
+        point_cloud = np.fromfile(file_path, dtype=np.float32).reshape(-1, 4)
+        # 2. Pegue apenas XYZ
+        point_cloud = point_cloud[:, :3] # Agora é (ex: 117038, 3)
+
+        num_atual_pontos = len(point_cloud)
+
+        # 3. FAÇA A AMOSTRAGEM (SAMPLING)
+        # Como N (8192) é sempre < num_atual_pontos (min 78k),
+        # este 'if' sempre será verdadeiro.
+        if num_atual_pontos > self.num_points:
+            # Escolhe 'num_points' índices aleatórios sem reposição
+            indices = np.random.choice(
+                num_atual_pontos, 
+                self.num_points, 
+                replace=False
+            )
+            point_cloud = point_cloud[indices, :]
+            
+        # O 'elif' para padding (preenchimento) nunca será chamado
+        # se você usar o dataset KITTI, mas é bom ter por segurança.
+        elif num_atual_pontos < self.num_points:
+            padding_size = self.num_points - num_atual_pontos
+            padding = np.zeros((padding_size, 3), dtype=point_cloud.dtype)
+            point_cloud = np.vstack((point_cloud, padding))
+        
+        # 4. Retorne o tensor de tamanho fixo [8192, 3]
+        # return torch.from_numpy(point_cloud).float()
         return torch.from_numpy(point_cloud)
+
 
 # =================================================================================
 # Argumentos e Loop de Treinamento
@@ -100,15 +127,22 @@ def get_args_parser():
     parser.add_argument('--device', default='cuda', help='device to use for training')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--num_workers', default=4, type=int)
+    parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--output_dir', default='./output_dir_pointmae', help='path where to save, empty for no saving')
-
+    parser.add_argument('--dist_url', default='env://',
+                        help='url used to set up distributed training')
     return parser
 
 def main(args):
     # --- Setup inicial ---
+    misc.init_distributed_mode(args)
+
+    # fix the seed for reproducibility
+    seed = args.seed + misc.get_rank()
+
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     print(f"Usando dispositivo: {device}")
 
     # Cria o diretório de saída
